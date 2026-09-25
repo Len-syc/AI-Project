@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 密钥与本地配置（.env.example 是模板，保留在仓库里）
+.env
+
+# 运行时产物
+app/data/uploads/
+
+# 构建产物
+dist/
+node_modules/
+
+# 系统文件
+.DS_Store
+Thumbs.db

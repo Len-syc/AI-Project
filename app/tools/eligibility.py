@@ -9,8 +9,8 @@
   MANUAL_REVIEW 条件字段来自系统推断或需主管部门认定
 """
 import datetime
-from app.schemas import Policy, UserProfile, EligibilityResult, ConditionResult
-from app.tools.policy import policy_detail
+from app.schemas import EligibilityResult, ConditionResult
+from app.tools.registry import DomainPack
 
 _NOW = datetime.date.today()
 
@@ -68,8 +68,10 @@ def _check_one(cond, profile: dict, sources: dict) -> ConditionResult:
 _RANK = {"FAIL": 0, "MANUAL_REVIEW": 1, "UNKNOWN": 2, "PASS": 3}
 
 
-def run_eligibility(policy_id: str, profile: dict, sources: dict) -> EligibilityResult:
-    policy = policy_detail(policy_id)
+def run_eligibility(policy_id: str, profile: dict, sources: dict,
+                    pack: DomainPack | None = None) -> EligibilityResult:
+    from app.tools.policy import policy_detail
+    policy = policy_detail(policy_id, pack)
     if policy is None:
         return EligibilityResult(policy_id=policy_id, policy_name=policy_id,
                                  overall="UNKNOWN", conditions=[],

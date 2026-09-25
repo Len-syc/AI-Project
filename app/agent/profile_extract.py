@@ -1,67 +1,60 @@
-"""用户画像抽取。mock 模式用关键词规则（离线可跑）；api 模式用 LLM 结构化抽取。
-两模式输出同一结构，pipeline 不感知差异。"""
-import re
+"""用户画像抽取。抽取规则来自领域包的 extract 配置（数据，不是代码）：
+  any_of     关键词映射（最长关键词优先，避免"就业"误命中"灵活就业"）
+  regex_int  正则抽整数（毕业年份/月数），支持 recent_any 近义命中直接取值
+  bool       true_any / false_any 关键词 → True/False
+
+api 模式改由 LLM 按 schema 字段做结构化抽取，字段清单同样来自领域包。
+"""
 from app import llm
-
-SUSONG_AREAS = ["姑苏区", "虎丘区", "工业园区", "高新区", "吴中区", "相城区", "吴江区",
-                "常熟市", "张家港市", "昆山市", "太仓市"]
-CITIES = ["苏州", "南京", "上海", "杭州", "北京", "深圳", "广州", "成都", "武汉", "西安",
-          "郑州", "合肥", "无锡", "常州", "南通", "徐州", "福州", "厦门", "长沙", "重庆"]
-
-EDU_MAP = [("博士", "博士"), ("硕士", "硕士"), ("研究生", "硕士"),
-           ("本科", "本科"), ("学士", "本科"), ("大专", "大专"), ("专科", "大专")]
-
-EXTRACT_SYSTEM = """从用户消息中抽取政务办事画像字段，缺失的字段不要编造，直接省略。
-可用字段：
-城市（如"苏州"）、学历（大专/本科/硕士/博士）、毕业年份（整数）、
-状态（就业/创业/灵活就业/待业）、是否首次创业（true/false）、
-企业注册地（苏州下辖区县名）、企业注册时间（"YYYY-MM"）、社保缴纳月数（整数）、
-困难情形（存在低保/残疾/助学贷款等情况时为 true）。
-输出 JSON：{"城市":..., "学历":..., ...}，只含能确认的字段。"""
+from app.tools.registry import DomainPack, ProfileField
 
 
-def _rule_extract(text: str) -> dict:
-    out = {}
-    for kw, v in EDU_MAP:
+def _extract_field(field: ProfileField, text: str):
+    spec = field.extract
+    # any_of：最长关键词优先
+    for kw in sorted(spec.any_of, key=len, reverse=True):
         if kw in text:
-            out["学历"] = v
-            break
-    years = [int(y) for y in re.findall(r"(20[0-3]\d)", text)
-             if 2015 <= int(y) <= 2035]
-    if "应届" in text or "今年毕业" in text:
-        out["毕业年份"] = max(y for y in years if y >= 2025) if years else 2026
-    elif years:
-        out["毕业年份"] = min(years, key=lambda y: abs(y - 2026))
-    for c in CITIES:
-        if c in text:
-            out["城市"] = c
-            break
-    for a in SUSONG_AREAS:
-        if a in text:
-            out["企业注册地"] = a
-            break
-    if "灵活就业" in text or "自由职业" in text:
-        out["状态"] = "灵活就业"
-    elif "创业" in text or "开公司" in text or "开店" in text:
-        out["状态"] = "创业"
-    elif "入职" in text or "上班" in text or "就业" in text:
-        out["状态"] = "就业"
-    if "第一次创业" in text or "首次创业" in text or re.search(r"第一次(自己)?(开|创)", text):
-        out["是否首次创业"] = True
-    elif "不是首次" in text or "之前创过" in text or "第二次创业" in text:
-        out["是否首次创业"] = False
-    m = re.search(r"社保[^0-9]{0,4}(\d{1,2})\s*个?月", text)
-    if m:
-        out["社保缴纳月数"] = int(m.group(1))
-    if any(k in text for k in ["低保", "残疾", "助学贷款", "困难家庭"]):
-        out["困难情形"] = True
-    return out
+            return spec.any_of[kw]
+    # regex_int
+    if spec.regex_int:
+        import re
+        cfg = spec.regex_int
+        for w in cfg.get("recent_any", []):
+            if w in text:
+                return cfg.get("recent_value")
+        m = re.search(cfg["pattern"], text)
+        if m:
+            v = int(m.group(1))
+            if v < cfg.get("min", -10**9) or v > cfg.get("max", 10**9):
+                return None
+            return v
+    # bool
+    if spec.bool:
+        for w in spec.bool.get("true_any", []):
+            if w in text:
+                return True
+        for w in spec.bool.get("false_any", []):
+            if w in text:
+                return False
+    return None
 
 
-def extract_profile(text: str, mode: str) -> dict:
+def extract_profile(text: str, pack: DomainPack, mode: str) -> dict:
+    """从一句话中抽取该领域画像字段。只返回能确认的字段。"""
     if mode == "api":
+        fields_desc = "\n".join(
+            f"- {f.name}（{f.type}{'，可选值: ' + '/'.join(map(str, f.options)) if f.options else ''}）"
+            for f in pack.profile_fields)
+        system = (f"从用户消息中抽取办事画像字段，缺失的字段不要编造，直接省略。\n"
+                  f"领域：{pack.name}\n可用字段：\n{fields_desc}\n"
+                  "输出 JSON：{字段名: 值}，只含能确认的字段。布尔值用 true/false，数字用数字。")
         try:
-            return llm.extract_json(EXTRACT_SYSTEM, text)
+            return llm.extract_json(system, text)
         except Exception:
             return {}
-    return _rule_extract(text)
+    out = {}
+    for f in pack.profile_fields:
+        v = _extract_field(f, text)
+        if v is not None:
+            out[f.name] = v
+    return out

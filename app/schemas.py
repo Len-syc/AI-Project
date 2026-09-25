@@ -4,20 +4,7 @@ from pydantic import BaseModel, Field
 
 # ---------- 枚举 ----------
 EligibilityStatus = Literal["PASS", "FAIL", "UNKNOWN", "MANUAL_REVIEW", "NOT_APPLICABLE"]
-FieldSource = Literal["user", "inferred", "system"]
 MaterialStatus = Literal["OK", "FIELD_ERROR", "CONFLICT", "UNREADABLE"]
-
-
-# ---------- 用户画像 ----------
-class UserProfile(BaseModel):
-    城市: Optional[str] = None
-    学历: Optional[str] = None            # 大专/本科/硕士/博士
-    毕业年份: Optional[int] = None
-    状态: Optional[str] = None            # 就业/创业/灵活就业/待业
-    是否首次创业: Optional[bool] = None
-    企业注册地: Optional[str] = None      # 苏州下辖区县
-    企业注册时间: Optional[str] = None    # 如 "2026-03"
-    社保缴纳月数: Optional[int] = None
 
 
 # ---------- 政策 ----------
@@ -94,7 +81,7 @@ class MaterialCheckResult(BaseModel):
 
 
 # ---------- Agent 会话 ----------
-Stage = Literal["collect_profile", "analyzing", "await_material", "report"]
+Stage = Literal["collect_profile", "await_domain", "analyzing", "await_material", "report"]
 
 
 class ChatRequest(BaseModel):

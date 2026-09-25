@@ -80,6 +80,7 @@
   <div class="header">
     <h1>🏛️ 政务办事智能辅助 Agent</h1>
     <span class="sub">高校毕业生就业创业 · 苏州 · MVP 演示</span>
+    <el-tag v-if="domainName" size="small" effect="dark">领域：{{ domainName }}</el-tag>
     <el-tag size="small" style="margin-left:auto" effect="dark" type="info">模式：{{ mode }}</el-tag>
     <el-tag size="small" effect="dark" type="warning">演示数据 · 政策待溯源</el-tag>
   </div>
@@ -100,12 +101,13 @@
           </div>
         </div>
         <div class="quick-row">
-          <el-button size="small" @click="fillDemo">一键演示（创业）</el-button>
+          <el-button size="small" @click="fillDemo('startup')">演示：创业补贴</el-button>
+          <el-button size="small" @click="fillDemo('residence')">演示：居住证</el-button>
           <el-button size="small" @click="quickSay('生成报告')" :disabled="stage !== 'await_material' && stage !== 'report'">生成报告</el-button>
           <el-button size="small" @click="quickSay('重新开始')" :disabled="!sessionId">重新开始</el-button>
         </div>
         <div class="chat-input">
-          <el-input v-model="input" placeholder="描述你想办理的事，例如：我是2026届本科毕业生，准备在苏州创业…" @keyup.enter="send" :disabled="busy" />
+          <el-input v-model="input" placeholder="描述你想办理的事，例如：我想在苏州办居住证 / 我是毕业生想创业…" @keyup.enter="send" :disabled="busy" />
           <el-button type="primary" @click="send" :loading="busy">发送</el-button>
         </div>
       </div>
@@ -151,24 +153,34 @@
 
         <el-tab-pane :label="`办理方案 (${plan.length})`" name="plan">
           <div v-if="!plan.length" class="empty-tip">资格判断完成后，这里生成个性化的办理步骤与顺序</div>
-          <div v-for="(t, i) in plan" :key="i" class="task-card" :class="t.status === '已完成' ? 'done' : (t.status === '待处理' ? 'todo' : '')">
-            <div style="display:flex; justify-content:space-between">
-              <b>{{ i + 1 }}. {{ t.name }}</b>
-              <el-tag size="small" :type="t.status === '已完成' ? 'success' : (t.status === '待处理' ? 'warning' : 'info')">{{ t.status }}</el-tag>
+          <template v-else>
+            <div style="margin-bottom:8px">
+              <el-tag :type="planSource === 'llm' ? 'success' : 'info'" effect="plain">
+                {{ planSource === 'llm' ? '🤖 AI 动态生成 · 已读取政策要点与办事攻略 · 每步含依据' : '📋 模板方案 · 离线兜底模式' }}
+              </el-tag>
             </div>
-            <div v-if="t.materials && t.materials.length" style="color:#909399; margin-top:4px">
-              所需材料：{{ t.materials.join('、') }}
+            <el-alert v-if="planSummary" :title="planSummary" type="info" :closable="false" style="margin-bottom:12px" />
+            <div v-for="(t, i) in plan" :key="i" class="task-card" :class="t.status === '已完成' ? 'done' : (t.status === '待处理' ? 'todo' : '')">
+              <div style="display:flex; justify-content:space-between">
+                <b>{{ i + 1 }}. {{ t.name }}</b>
+                <el-tag size="small" :type="t.status === '已完成' ? 'success' : (t.status === '待处理' ? 'warning' : 'info')">{{ t.status }}</el-tag>
+              </div>
+              <div v-if="t.precondition" style="color:#909399; margin-top:4px">前置：{{ t.precondition }}</div>
+              <div v-if="t.materials && t.materials.length" style="color:#909399; margin-top:4px">
+                所需材料：{{ t.materials.join('、') }}
+              </div>
+              <div v-if="t.next_action" style="color:#94a3b8; font-size:12px; margin-top:4px">下一步：{{ t.next_action }}</div>
+              <div style="color:#94a3b8; font-size:12px; margin-top:4px">依据：{{ t.policy_ref }}</div>
             </div>
-            <div style="color:#94a3b8; font-size:12px; margin-top:4px">依据：{{ t.policy_ref }}</div>
-          </div>
+          </template>
         </el-tab-pane>
 
         <el-tab-pane :label="`材料中心 (${materials.length})`" name="material">
           <div style="display:flex; gap:10px; margin-bottom:12px; align-items:center; flex-wrap:wrap">
             <el-upload :http-request="doUpload" :show-file-list="false" accept="image/*">
-              <el-button type="primary" :disabled="!sessionId || stage === 'collect_profile'">上传材料图片</el-button>
+              <el-button type="primary" :disabled="!sessionId || (stage !== 'await_material' && stage !== 'report')">上传材料图片</el-button>
             </el-upload>
-            <el-button type="success" plain :disabled="!sessionId || stage === 'collect_profile' || demoUploading"
+            <el-button type="success" plain :disabled="!sessionId || (stage !== 'await_material' && stage !== 'report') || demoUploading"
                        @click="uploadDemoSet" :loading="demoUploading">一键上传演示样本（3 件）</el-button>
             <span style="font-size:12px;color:#909399">样本含故意填错的申请表，用于演示冲突检查</span>
           </div>
@@ -252,8 +264,11 @@ const app = createApp({
     const profile = ref({});
     const profileSources = ref({});
     const policies = ref([]);
+    const domainName = ref("");
     const eligibility = ref([]);
     const plan = ref([]);
+    const planSource = ref(null);
+    const planSummary = ref("");
     const materials = ref([]);
     const materialCheck = ref(null);
     const report = ref(null);
@@ -280,11 +295,14 @@ const app = createApp({
     function applyState(d) {
       if (d.session_id) sessionId.value = d.session_id;
       if (d.stage) stage.value = d.stage;
+      if (d.domain) domainName.value = d.domain.name;
       if (d.profile) profile.value = d.profile;
       if (d.profile_sources) profileSources.value = d.profile_sources;
       if (d.policies) policies.value = d.policies;
       if (d.eligibility) eligibility.value = d.eligibility;
       if (d.plan) plan.value = d.plan;
+      if (d.plan_source) planSource.value = d.plan_source;
+      if (d.plan_summary) planSummary.value = d.plan_summary;
       if (d.materials) materials.value = d.materials;
       if (d.material_check) materialCheck.value = d.material_check;
       if (d.report) report.value = d.report;
@@ -334,7 +352,11 @@ const app = createApp({
     }
 
     const quickSay = t => { input.value = t; send(); };
-    const fillDemo = () => { input.value = "我是2026届本科毕业生，在苏州工业园区注册了一家公司，是第一次创业，想问问有什么创业补贴可以申请？"; send(); };
+    const DEMO_MSGS = {
+      startup: "我是2026届本科毕业生，在苏州工业园区注册了一家公司，是第一次创业，想问问有什么创业补贴可以申请？",
+      residence: "我不是苏州户口，在苏州工作租房子住了8个月了，想办一张居住证",
+    };
+    const fillDemo = key => { input.value = DEMO_MSGS[key]; send(); };
 
     const demoUploading = ref(false);
     const DEMO_SAMPLES = ["身份证_张三.png", "营业执照_星辉科技.png", "创业补贴申请表_李四.png"];
@@ -374,7 +396,8 @@ const app = createApp({
     }
 
     return { mode, messages, input, busy, trace, sessionId, stage, activeTab, msgsRef,
-             profile, profileSources, policies, eligibility, plan, materials, materialCheck, report,
+             profile, profileSources, policies, domainName, eligibility, plan, planSource, planSummary,
+             materials, materialCheck, report,
              profileRows, hasProfile, readinessOk, statusLabel, statusType, iconOf, policyOf,
              send, quickSay, fillDemo, doUpload, uploadDemoSet, demoUploading };
   },

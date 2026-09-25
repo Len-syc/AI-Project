@@ -17,8 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from app import config
 from app.store import new_session, get_session
 from app.agent.pipeline import handle_chat, build_report
-from app.tools import policy as policy_tool
-from app.tools import material as material_tool
+from app.agent import tool_gateway as gateway
 from app.schemas import ChatRequest
 
 
@@ -77,11 +76,11 @@ async def upload_material(session_id: str = Form(...), file: UploadFile = File(.
     with open(save_path, "wb") as f:
         f.write(await file.read())
 
-    rec = material_tool.parse_document(session_id, save_path, file.filename or "upload" + ext)
+    rec = await gateway.parse_document(save_path, file.filename or "upload" + ext)
     session["materials"].append(rec)
 
     required = sorted({m for t in session["plan"] for m in t.materials})
-    check = material_tool.check_materials(session, required)
+    check = await gateway.check_materials(session, required)
     session["material_check"] = check
 
     from app.agent.pipeline import _snapshot
@@ -89,9 +88,24 @@ async def upload_material(session_id: str = Form(...), file: UploadFile = File(.
             "state": _snapshot(session)}
 
 
+@app.get("/api/domains")
+def list_domains():
+    from app.tools.registry import load_domains
+    return [{"domain_id": p.domain_id, "name": p.name, "description": p.description,
+             "policy_count": len(p.policies)} for p in load_domains().values()]
+
+
 @app.get("/api/policies")
-def list_policies():
-    return [p.model_dump() for p in policy_tool.load_policies()]
+def list_policies(domain: str | None = None):
+    from app.tools.registry import load_domains
+    packs = [load_domains()[domain]] if domain else list(load_domains().values())
+    out = []
+    for p in packs:
+        for item in p.policies:
+            d = item.model_dump()
+            d["domain_id"] = p.domain_id
+            out.append(d)
+    return out
 
 
 # ---------- 前端静态托管 ----------
